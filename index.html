@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>TimeTrack Pro</title>
+  <meta name="theme-color" content="#2196F3">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="TimeTrack">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>⏱️ TimeTrack Pro</h1>
+    <div class="balance" id="balance">Solde : –</div>
+  </header>
+
+  <main>
+    <!-- BADGEUSE -->
+    <section id="view-badge" class="view active">
+      <div class="today-date" id="today-date"></div>
+      <div class="status-card" id="status-card">
+        <div class="status-label" id="status-label">Pas encore badgé</div>
+        <div class="status-timer" id="status-timer">0:00</div>
+        <div class="status-sub" id="status-sub"></div>
+      </div>
+
+      <div class="badge-actions" id="badge-actions"></div>
+
+      <div class="card">
+        <div class="today-grid">
+          <div><span>Arrivée</span><strong id="t-arrival">–</strong></div>
+          <div><span>Pause</span><strong id="t-pause">–</strong></div>
+          <div><span>Départ</span><strong id="t-departure">–</strong></div>
+          <div><span>Au solde</span><strong id="t-credit">–</strong></div>
+        </div>
+        <button class="link-btn" id="edit-today">✏️ Corriger la journée</button>
+      </div>
+
+      <div class="card">
+        <label>Projet<input id="project" list="projects-list" autocomplete="off" placeholder="Ex : Suivi lac"></label>
+        <datalist id="projects-list"></datalist>
+        <label>Localisation<input id="location" autocomplete="off" placeholder="Ex : Sur site"></label>
+      </div>
+    </section>
+
+    <!-- CALENDRIER -->
+    <section id="view-calendar" class="view">
+      <div class="month-nav">
+        <button id="prev-month" aria-label="Mois précédent">‹</button>
+        <h2 id="month-title"></h2>
+        <button id="next-month" aria-label="Mois suivant">›</button>
+      </div>
+      <div class="cal-head"><span>L</span><span>M</span><span>M</span><span>J</span><span>V</span><span class="we">S</span><span class="we">D</span></div>
+      <div class="cal-grid" id="cal-grid"></div>
+      <div class="month-summary" id="month-summary"></div>
+      <div class="legend">
+        <span class="lg work">Travaillé</span><span class="lg repos">Repos</span><span class="lg both">Travail + repos</span>
+      </div>
+    </section>
+
+    <!-- DONNÉES -->
+    <section id="view-data" class="view">
+      <div class="card">
+        <h3>📤 Envoyer vers le PC</h3>
+        <p>Crée un fichier avec tes heures de <strong id="export-year"></strong>. Envoie-le par mail, AirDrop ou OneDrive, puis, dans l'app PC : <em>Fichier → Importer depuis le téléphone</em>.</p>
+        <button class="btn primary" id="export-btn">Exporter mes heures</button>
+      </div>
+      <div class="card">
+        <h3>📥 Recevoir depuis le PC</h3>
+        <p>Dans l'app PC : <em>Fichier → Exporter vers le téléphone</em>, puis ouvre ce fichier ici. Ça récupère ton solde, tes repos et l'historique. Tes saisies faites sur le téléphone et plus récentes sont conservées.</p>
+        <label class="btn secondary file-btn">Importer un fichier<input type="file" id="import-file" accept=".json,application/json"></label>
+      </div>
+      <div class="card small">
+        <h3>ℹ️ Règles de calcul</h3>
+        <ul>
+          <li>Quota journalier : 7h44 (dépassement → solde)</li>
+          <li>Heures de nuit (21h-6h) : x1,5</li>
+          <li>Samedi : x1 • Dimanche : x2 (toutes les heures vont au solde)</li>
+        </ul>
+        <p class="muted" id="storage-info"></p>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabbar">
+    <button data-view="badge" class="active">🕐<span>Badger</span></button>
+    <button data-view="calendar">📅<span>Calendrier</span></button>
+    <button data-view="data">🔄<span>Données</span></button>
+  </nav>
+
+  <!-- Fenêtre d'édition d'un jour -->
+  <dialog id="day-dialog">
+    <form method="dialog" id="day-form">
+      <h3 id="day-title"></h3>
+      <div class="form-grid">
+        <label>Arrivée<input id="d-arrival" type="time"></label>
+        <label>Départ<input id="d-departure" type="time"></label>
+        <label>Pause (min)<input id="d-pause" type="number" min="0" step="5" inputmode="numeric"></label>
+        <label>Total manuel<input id="d-manual" placeholder="H:MM" inputmode="numeric"></label>
+      </div>
+      <label>Projet<input id="d-project" list="projects-list" autocomplete="off"></label>
+      <label>Localisation<input id="d-location" autocomplete="off"></label>
+      <div class="day-result" id="d-result"></div>
+      <div class="day-repos" id="d-repos"></div>
+      <div class="dialog-actions">
+        <button type="button" class="btn danger" id="d-delete">Effacer</button>
+        <button type="button" class="btn secondary" id="d-cancel">Annuler</button>
+        <button type="submit" class="btn primary" id="d-save">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>
