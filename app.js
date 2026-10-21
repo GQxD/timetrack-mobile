@@ -9,6 +9,9 @@ const NIGHT_START_HOUR = 21;
 const NIGHT_END_HOUR = 6;
 const SATURDAY_COEFFICIENT = 1.0;
 const SUNDAY_COEFFICIENT = 2.0;
+// Journée badgée d'une seule traite (sans débadger) : pause déduite automatiquement au départ
+const AUTO_PAUSE_MINUTES = 45;
+const AUTO_PAUSE_MIN_DAY = 6 * 60; // seulement si la plage dépasse 6 h
 
 const MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août',
   'septembre', 'octobre', 'novembre', 'décembre'];
@@ -291,7 +294,12 @@ function badgeIn() {
   const { year, data, entry, date } = badgeEntry(true);
   const prefs = currentPrefs();
   const segments = entrySegments(entry);
-  const pause = entryPause(entry);
+  let pause = entryPause(entry);
+  if (entry.auto_pause) {
+    // Reprise après un départ : la coupure remplace la pause automatique
+    pause = Math.max(0, pause - AUTO_PAUSE_MINUTES);
+    delete entry.auto_pause;
+  }
   const now = hhmm(new Date());
   segments.push({ start: now, end: '' });
   setSegments(entry, segments, pause);
@@ -311,7 +319,13 @@ function badgeOut() {
   const last = segments[segments.length - 1];
   if (!last || last.end) return;
   last.end = hhmm(new Date());
-  setSegments(entry, segments, entryPause(entry));
+  let pause = entryPause(entry);
+  // Pas débadgé de la journée : 45 min de pause déduites (modifiable via « Corriger la journée »)
+  if (segments.length === 1 && !pause && gapMinutes(last.start, last.end) > AUTO_PAUSE_MIN_DAY) {
+    pause = AUTO_PAUSE_MINUTES;
+    entry.auto_pause = true;
+  }
+  setSegments(entry, segments, pause);
   entry.modified_at = localStamp();
   saveYear(year, data);
   saveSession(null);
@@ -572,6 +586,7 @@ function saveDay(event) {
     entry = { date: dateStr, validated: false };
     data.entries.push(entry);
   }
+  delete entry.auto_pause;
   if (form.manual_hours) {
     setSegments(entry, [], 0);
     entry.manual_hours = form.manual_hours;
