@@ -85,6 +85,11 @@ function dayCoefficient(dateStr) {
 
 const isWeekend = (dateStr) => [0, 6].includes(parseIso(dateStr).getDay());
 
+/** Pause appliquée quand aucune n'est renseignée : 45 min si la journée dépasse 6 h (sauf « 0 » saisi). */
+function defaultPause(entry, worked) {
+  return entry.no_pause || worked <= AUTO_PAUSE_MIN_DAY ? 0 : AUTO_PAUSE_MINUTES;
+}
+
 function calculateDayTotal(entry) {
   const dateStr = entry.date || '';
   let total = 0;
@@ -93,23 +98,35 @@ function calculateDayTotal(entry) {
     total = entry.manual_hours;
   } else if (Array.isArray(entry.segments) && entry.segments.length) {
     // Plages badgées : seules les plages fermées comptent ; la coupure entre deux plages n'est pas travaillée
-    for (const seg of entry.segments) {
-      if (!seg.end) continue;
+    const closed = entry.segments.filter((seg) => seg.end);
+    for (const seg of closed) {
       const p = calculatePeriod(`${seg.start}-${seg.end}`);
       total += p.total;
       night += p.night;
     }
-    total = Math.max(0, total - (parseInt(entry.pause_minutes, 10) || 0));
+    let pause = parseInt(entry.pause_minutes, 10) || 0;
+    if (!pause && closed.length === 1 && entry.segments.length === 1) pause = defaultPause(entry, total);
+    total = Math.max(0, total - pause);
     night = Math.min(night, total);
   } else if (entry.arrival) {
     const span = calculatePeriod(`${entry.arrival}-${entry.departure || ''}`);
-    total = Math.max(0, span.total - (parseInt(entry.break_minutes, 10) || 0));
+    const pause = (parseInt(entry.break_minutes, 10) || 0) || defaultPause(entry, span.total);
+    total = Math.max(0, span.total - pause);
     night = Math.min(span.night, total);
   } else {
-    for (const key of ['morning', 'afternoon', 'night']) {
-      const p = calculatePeriod(entry[key] || '');
+    const slots = ['morning', 'afternoon', 'night'].map((k) => entry[k]).filter(Boolean);
+    for (const slot of slots) {
+      const p = calculatePeriod(slot);
       total += p.total;
       night += p.night;
+    }
+    if (slots.length && total) {
+      // Créneaux sans trou (pas de coupure repas) : pause par défaut
+      const span = calculatePeriod(`${slots[0].split('-')[0]}-${slots[slots.length - 1].split('-').pop()}`).total;
+      if (span <= total) {
+        total = Math.max(0, total - defaultPause(entry, total));
+        night = Math.min(night, total);
+      }
     }
   }
   let overtime;
@@ -135,7 +152,7 @@ function loadYear(year) {
       return {
         entries: Array.isArray(data.entries) ? data.entries : [],
         overtime_taken: Array.isArray(data.overtime_taken) ? data.overtime_taken : [],
-        initial_overtime_minutes: Math.max(0, parseInt(data.initial_overtime_minutes, 10) || 0),
+        initial_overtime_minutes: parseInt(data.initial_overtime_minutes, 10) || 0,
       };
     }
   } catch (e) { /* données illisibles : on repart de zéro */ }
@@ -518,7 +535,7 @@ function openDay(dateStr) {
   $('#d-segments').innerHTML = '';
   const segments = entrySegments(entry);
   (segments.length ? segments : [{ start: '', end: '' }]).forEach((seg) => segmentRow(seg));
-  $('#d-pause').value = entryPause(entry) || '';
+  $('#d-pause').value = entryPause(entry) || (entry.no_pause ? '0' : '');
   $('#d-manual').value = entry.manual_hours ? minutesToTime(entry.manual_hours) : '';
   $('#d-project').value = entry.project || prefs.project || '';
   $('#d-location').value = entry.location || prefs.location || '';
@@ -550,8 +567,10 @@ function readDayForm() {
     segments.push({ start, end });
   }
   if (!segments.length) return { data: null };
-  const pause = parseInt($('#d-pause').value, 10) || 0;
+  const pauseText = $('#d-pause').value.trim();
+  const pause = parseInt(pauseText, 10) || 0;
   const data = { segments, pause_minutes: pause };
+  if (pauseText !== '' && pause === 0) data.no_pause = true;
   const closed = segments.filter((seg) => seg.end);
   if (closed.length && calculateDayTotal({ date: state.editingDate, ...data }).total <= 0) {
     return { error: 'La pause est plus longue que les plages' };
@@ -587,11 +606,13 @@ function saveDay(event) {
     data.entries.push(entry);
   }
   delete entry.auto_pause;
+  delete entry.no_pause;
   if (form.manual_hours) {
     setSegments(entry, [], 0);
     entry.manual_hours = form.manual_hours;
   } else {
     setSegments(entry, form.segments, form.pause_minutes);
+    if (form.no_pause) entry.no_pause = true;
   }
   Object.assign(entry, {
     project: $('#d-project').value.trim(),
@@ -698,7 +719,7 @@ async function importData(event) {
   const incoming = {
     entries,
     overtime_taken: Array.isArray(raw.overtime_taken) ? raw.overtime_taken : [],
-    initial_overtime_minutes: Math.max(0, parseInt(raw.initial_overtime_minutes, 10) || 0),
+    initial_overtime_minutes: parseInt(raw.initial_overtime_minutes, 10) || 0,
   };
   const local = loadYear(year);
   const { merged, kept } = mergeFromPc(local, incoming);
