@@ -33,12 +33,9 @@
       <div class="badge-actions" id="badge-actions"></div>
 
       <div class="card">
-        <div class="today-grid">
-          <div><span>Arrivée</span><strong id="t-arrival">–</strong></div>
-          <div><span>Pause</span><strong id="t-pause">–</strong></div>
-          <div><span>Départ</span><strong id="t-departure">–</strong></div>
-          <div><span>Au solde</span><strong id="t-credit">–</strong></div>
-        </div>
+        <h3>Plages du jour</h3>
+        <ul class="segments" id="t-segments"><li class="muted">Aucune plage badgée</li></ul>
+        <div class="today-total" id="t-total"></div>
         <button class="link-btn" id="edit-today">✏️ Corriger la journée</button>
       </div>
 
@@ -98,10 +95,11 @@
   <dialog id="day-dialog">
     <form method="dialog" id="day-form">
       <h3 id="day-title"></h3>
+      <div class="seg-head"><span>Arrivée</span><span>Départ</span><span></span></div>
+      <div id="d-segments"></div>
+      <button type="button" class="link-btn" id="d-add-segment">＋ Ajouter une plage</button>
       <div class="form-grid">
-        <label>Arrivée<input id="d-arrival" type="time"></label>
-        <label>Départ<input id="d-departure" type="time"></label>
-        <label>Pause (min)<input id="d-pause" type="number" min="0" step="5" inputmode="numeric"></label>
+        <label>Pause à déduire (min)<input id="d-pause" type="number" min="0" step="5" inputmode="numeric" placeholder="0"></label>
         <label>Total manuel<input id="d-manual" placeholder="H:MM" inputmode="numeric"></label>
       </div>
       <label>Projet<input id="d-project" list="projects-list" autocomplete="off"></label>

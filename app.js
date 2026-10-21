@@ -88,6 +88,16 @@ function calculateDayTotal(entry) {
   let night = 0;
   if (entry.manual_hours) {
     total = entry.manual_hours;
+  } else if (Array.isArray(entry.segments) && entry.segments.length) {
+    // Plages badgées : seules les plages fermées comptent ; la coupure entre deux plages n'est pas travaillée
+    for (const seg of entry.segments) {
+      if (!seg.end) continue;
+      const p = calculatePeriod(`${seg.start}-${seg.end}`);
+      total += p.total;
+      night += p.night;
+    }
+    total = Math.max(0, total - (parseInt(entry.pause_minutes, 10) || 0));
+    night = Math.min(night, total);
   } else if (entry.arrival) {
     const span = calculatePeriod(`${entry.arrival}-${entry.departure || ''}`);
     total = Math.max(0, span.total - (parseInt(entry.break_minutes, 10) || 0));
@@ -203,102 +213,109 @@ function badgeEntry(create = false) {
   return { date, year, data, entry };
 }
 
-/** Datetime réel d'une heure "HH:MM" du jour badgé (le départ peut tomber le lendemain). */
+/** Datetime réel d'une heure "HH:MM" du jour badgé (une heure "avant" la précédente tombe le lendemain). */
 function timeOnDate(dateStr, timeStr, after) {
   const t = parseTime(timeStr);
   const d = parseIso(dateStr);
   d.setHours(t.hours, t.minutes, 0, 0);
-  if (after && d <= after) d.setDate(d.getDate() + 1);
+  if (after && d < after) d.setDate(d.getDate() + 1);
   return d;
+}
+
+/** Durée entre deux heures "HH:MM" (0 si identiques, passage de minuit géré). */
+function gapMinutes(from, to) {
+  if (toInputTime(from) === toInputTime(to)) return 0;
+  return calculatePeriod(`${from}-${to}`).total;
+}
+
+/** Plages d'une saisie, quel que soit son format (badgeuse, créneaux du PC, arrivée/départ). */
+function entrySegments(entry) {
+  if (!entry || entry.manual_hours) return [];
+  if (Array.isArray(entry.segments)) return entry.segments.map((seg) => ({ ...seg }));
+  const slots = ['morning', 'afternoon', 'night'].map((k) => entry[k]).filter((x) => x && x.includes('-'));
+  if (slots.length) {
+    return slots.map((x) => { const [start, end] = x.split('-'); return { start: toInputTime(start), end: toInputTime(end) }; });
+  }
+  if (entry.arrival) return [{ start: toInputTime(entry.arrival), end: toInputTime(entry.departure) }];
+  return [];
+}
+
+/** Pause à déduire en plus des coupures (cas d'une saisie arrivée/départ du PC). */
+function entryPause(entry) {
+  if (!entry) return 0;
+  if (Array.isArray(entry.segments)) return parseInt(entry.pause_minutes, 10) || 0;
+  if (entry.arrival) return parseInt(entry.break_minutes, 10) || 0;
+  return 0;
+}
+
+/**
+ * Écrit les plages dans la saisie, avec les champs arrivée / départ / pause
+ * déduits pour l'app PC (pause = coupures entre plages + pause à déduire).
+ */
+function setSegments(entry, segments, pauseMinutes) {
+  ['manual_hours', 'arrival', 'departure', 'break_minutes', 'segments', 'pause_minutes'].forEach((k) => delete entry[k]);
+  Object.assign(entry, { morning: '', afternoon: '', night: '' });
+  if (!segments.length) return;
+  const gaps = segments.slice(1).reduce((sum, seg, i) => sum + (segments[i].end ? gapMinutes(segments[i].end, seg.start) : 0), 0);
+  entry.segments = segments;
+  entry.pause_minutes = pauseMinutes || 0;
+  entry.arrival = segments[0].start;
+  entry.departure = segments[segments.length - 1].end || '';
+  entry.break_minutes = gaps + (pauseMinutes || 0);
 }
 
 function badgeStatus() {
   const { date, entry } = badgeEntry();
-  const session = loadSession();
-  if (!entry || (!entry.arrival && !entry.manual_hours && !entry.morning && !entry.afternoon && !entry.night)) {
-    return { state: 'none', date, entry };
-  }
-  if (entry.arrival && !entry.departure && session && session.date === date) {
-    return { state: session.pauseStart ? 'paused' : 'working', date, entry, session };
-  }
-  return { state: 'done', date, entry };
+  if (entry && entry.manual_hours) return { state: 'manual', date, entry, segments: [] };
+  const segments = entrySegments(entry);
+  if (!segments.length) return { state: 'none', date, entry, segments };
+  const open = !segments[segments.length - 1].end;
+  return { state: open ? 'working' : 'out', date, entry, segments };
 }
 
 function workedMinutesNow(status) {
-  const { entry, session } = status;
-  if (!entry || !entry.arrival) return calculateDayTotal(entry || {}).total;
-  const start = timeOnDate(status.date, entry.arrival);
-  let end = new Date();
-  if (status.state === 'done') return calculateDayTotal(entry).total;
-  let minutes = Math.floor((end - start) / 60000) - (parseInt(entry.break_minutes, 10) || 0);
-  if (session && session.pauseStart) minutes -= Math.floor((end - session.pauseStart) / 60000);
+  if (status.state === 'manual') return status.entry.manual_hours;
+  let minutes = calculateDayTotal(status.entry || {}).total;
+  if (status.state === 'working') {
+    const segs = status.segments;
+    // Instant réel de début de la plage ouverte (en tenant compte des plages précédentes après minuit)
+    let cursor = timeOnDate(status.date, segs[0].start);
+    for (let i = 1; i < segs.length; i++) cursor = timeOnDate(status.date, segs[i].start, cursor);
+    minutes += Math.max(0, Math.floor((Date.now() - cursor) / 60000));
+  }
   return Math.max(0, minutes);
 }
 
-function doArrival() {
+/** Badger : ouvre une nouvelle plage (arrivée ou reprise). */
+function badgeIn() {
   const { year, data, entry, date } = badgeEntry(true);
   const prefs = currentPrefs();
-  Object.assign(entry, {
-    arrival: hhmm(new Date()), departure: '', break_minutes: 0,
-    morning: '', afternoon: '', night: '', project: prefs.project, location: prefs.location,
-    modified_at: localStamp(),
-  });
-  delete entry.manual_hours;
-  saveYear(year, data);
-  saveSession({ date });
-  toast(`✅ Arrivée badgée à ${entry.arrival}`);
-  render();
-}
-
-function doPause() {
-  const session = loadSession();
-  saveSession({ ...session, pauseStart: Date.now() });
-  toast('☕ Pause démarrée');
-  render();
-}
-
-function endPause() {
-  const session = loadSession();
-  if (!session || !session.pauseStart) return;
-  const { year, data, entry } = badgeEntry();
-  const minutes = Math.round((Date.now() - session.pauseStart) / 60000);
-  entry.break_minutes = (parseInt(entry.break_minutes, 10) || 0) + minutes;
+  const segments = entrySegments(entry);
+  const pause = entryPause(entry);
+  const now = hhmm(new Date());
+  segments.push({ start: now, end: '' });
+  setSegments(entry, segments, pause);
+  if (prefs.project) entry.project = prefs.project;
+  if (prefs.location) entry.location = prefs.location;
   entry.modified_at = localStamp();
   saveYear(year, data);
-  saveSession({ date: session.date });
-  return minutes;
-}
-
-function doResume() {
-  const minutes = endPause();
-  toast(`▶️ Reprise (pause de ${minutesToTime(minutes)})`);
+  saveSession({ date });
+  toast(segments.length > 1 ? `▶️ Reprise badgée à ${now}` : `✅ Arrivée badgée à ${now}`);
   render();
 }
 
-function doDeparture() {
-  endPause();
+/** Débadger : ferme la plage en cours (pause, coupure ou fin de journée). */
+function badgeOut() {
   const { year, data, entry } = badgeEntry();
-  entry.departure = hhmm(new Date());
+  const segments = entrySegments(entry);
+  const last = segments[segments.length - 1];
+  if (!last || last.end) return;
+  last.end = hhmm(new Date());
+  setSegments(entry, segments, entryPause(entry));
   entry.modified_at = localStamp();
   saveYear(year, data);
   saveSession(null);
-  const calc = calculateDayTotal(entry);
-  toast(`👋 Départ à ${entry.departure} • ${minutesToTime(calc.total)} travaillées`);
-  render();
-}
-
-/** Reprendre après un départ : le temps écoulé depuis le départ compte comme une pause. */
-function doRestart() {
-  const { year, data, entry, date } = badgeEntry();
-  if (!entry || !entry.arrival || !entry.departure) return;
-  const departure = timeOnDate(date, entry.departure, timeOnDate(date, entry.arrival));
-  const gap = Math.max(0, Math.round((Date.now() - departure) / 60000));
-  entry.break_minutes = (parseInt(entry.break_minutes, 10) || 0) + gap;
-  entry.departure = '';
-  entry.modified_at = localStamp();
-  saveYear(year, data);
-  saveSession({ date });
-  toast('▶️ Journée reprise');
+  toast(`👋 Départ badgé à ${last.end} • ${minutesToTime(calculateDayTotal(entry).total)} aujourd'hui`);
   render();
 }
 
@@ -327,16 +344,17 @@ function renderBadge() {
   $('#today-date').textContent = `${DAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
 
   const card = $('#status-card');
-  card.className = `status-card ${status.state}`;
-  const labels = { none: 'Pas encore badgé', working: '🟢 Au travail', paused: '☕ En pause', done: '✅ Journée terminée' };
+  card.className = `status-card ${status.state === 'out' ? 'paused' : status.state === 'manual' ? 'done' : status.state}`;
+  const labels = {
+    none: 'Pas encore badgé', working: '🟢 Au travail', out: '⏸️ Débadgé', manual: '✏️ Saisie manuelle',
+  };
   $('#status-label').textContent = labels[status.state];
-  $('#status-timer').textContent = minutesToTime(workedMinutesNow(status));
+  const worked = workedMinutesNow(status);
+  $('#status-timer').textContent = minutesToTime(worked);
 
   let sub = '';
-  if (status.state === 'paused') {
-    sub = `Pause depuis ${minutesToTime(Math.floor((Date.now() - status.session.pauseStart) / 60000))}`;
-  } else if (status.state === 'working') {
-    const remaining = DAILY_TARGET_MINUTES - workedMinutesNow(status);
+  if (status.state === 'working' || status.state === 'out') {
+    const remaining = DAILY_TARGET_MINUTES - worked;
     sub = isWeekend(status.date) ? 'Week-end : tout va au solde'
       : remaining > 0 ? `Encore ${minutesToTime(remaining)} pour faire 7h44` : `+${minutesToTime(-remaining)} au-delà de 7h44`;
   }
@@ -346,23 +364,43 @@ function renderBadge() {
   actions.innerHTML = '';
   actions.className = 'badge-actions';
   if (status.state === 'none') {
-    actions.append(button('Arrivée', 'success big', doArrival));
+    actions.append(button('Badger l\'arrivée', 'success big', badgeIn));
   } else if (status.state === 'working') {
-    actions.classList.add('two');
-    actions.append(button('☕ Pause', 'warning big', doPause), button('Départ', 'danger big', doDeparture));
-  } else if (status.state === 'paused') {
-    actions.classList.add('two');
-    actions.append(button('▶️ Reprendre', 'success big', doResume), button('Départ', 'danger big', doDeparture));
-  } else if (status.entry && status.entry.arrival && status.entry.departure) {
-    actions.append(button('↩️ Reprendre la journée', 'secondary', doRestart));
+    actions.append(button('Badger le départ', 'danger big', badgeOut));
+  } else if (status.state === 'out') {
+    actions.append(button('▶️ Badger une reprise', 'success big', badgeIn));
   }
 
-  const e = status.entry || {};
-  const calc = calculateDayTotal(e);
-  $('#t-arrival').textContent = e.arrival || (e.manual_hours ? 'manuel' : '–');
-  $('#t-pause').textContent = e.break_minutes ? minutesToTime(e.break_minutes) : '–';
-  $('#t-departure').textContent = e.departure || '–';
-  $('#t-credit').textContent = status.state === 'done' && calc.overtime ? `+${minutesToTime(calc.overtime)}` : '–';
+  // Liste des plages avec les coupures
+  const list = $('#t-segments');
+  list.innerHTML = '';
+  if (status.state === 'manual') {
+    list.innerHTML = `<li><span>Total manuel</span><strong>${minutesToTime(status.entry.manual_hours)}</strong></li>`;
+  } else if (!status.segments.length) {
+    list.innerHTML = '<li class="muted">Aucune plage badgée</li>';
+  }
+  status.segments.forEach((seg, i) => {
+    if (i > 0 && status.segments[i - 1].end) {
+      const gap = document.createElement('li');
+      gap.className = 'gap';
+      gap.textContent = `coupure ${minutesToTime(gapMinutes(status.segments[i - 1].end, seg.start))}`;
+      list.append(gap);
+    }
+    const li = document.createElement('li');
+    const duration = seg.end ? minutesToTime(gapMinutes(seg.start, seg.end)) : 'en cours…';
+    li.className = seg.end ? '' : 'open';
+    li.innerHTML = `<span>${seg.start} → ${seg.end || '…'}</span><strong>${duration}</strong>`;
+    list.append(li);
+  });
+  const pause = status.entry ? entryPause(status.entry) : 0;
+  if (pause && status.segments.length) {
+    const li = document.createElement('li');
+    li.innerHTML = `<span>Pause déduite</span><strong>-${minutesToTime(pause)}</strong>`;
+    list.append(li);
+  }
+  const calc = calculateDayTotal(status.entry || {});
+  $('#t-total').textContent = status.entry && calc.total
+    ? `Total ${minutesToTime(calc.total)} • +${minutesToTime(calc.overtime)} au solde` : '';
 }
 
 function renderBalance() {
@@ -442,6 +480,17 @@ function render() {
 // ============================================================
 // Édition d'un jour
 // ============================================================
+function segmentRow(seg = { start: '', end: '' }) {
+  const row = document.createElement('div');
+  row.className = 'seg-row';
+  row.innerHTML = '<input type="time" class="seg-start"><input type="time" class="seg-end"><button type="button" aria-label="Supprimer la plage">✕</button>';
+  row.querySelector('.seg-start').value = toInputTime(seg.start);
+  row.querySelector('.seg-end').value = toInputTime(seg.end);
+  row.querySelectorAll('input').forEach((i) => i.addEventListener('input', updateDayResult));
+  row.querySelector('button').addEventListener('click', () => { row.remove(); updateDayResult(); });
+  $('#d-segments').append(row);
+}
+
 function openDay(dateStr) {
   state.editingDate = dateStr;
   const data = loadYear(dateStr.slice(0, 4));
@@ -452,23 +501,10 @@ function openDay(dateStr) {
   $('#day-title').textContent = `${DAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}` +
     (list.length > 1 ? ` (+${list.length - 1} autre saisie)` : '');
 
-  // Ancien format du PC (créneaux) : première arrivée, dernier départ, trous = pause
-  let arrival = entry.arrival || '';
-  let departure = entry.departure || '';
-  let pause = entry.break_minutes || '';
-  if (!arrival && !entry.manual_hours) {
-    const slots = ['morning', 'afternoon', 'night'].map((k) => entry[k]).filter((s) => s && s.includes('-'));
-    if (slots.length) {
-      arrival = slots[0].split('-')[0];
-      departure = slots[slots.length - 1].split('-')[1];
-      const worked = slots.reduce((s, x) => s + calculatePeriod(x).total, 0);
-      const span = calculatePeriod(`${arrival}-${departure}`).total;
-      pause = span > worked ? span - worked : '';
-    }
-  }
-  $('#d-arrival').value = toInputTime(arrival);
-  $('#d-departure').value = toInputTime(departure);
-  $('#d-pause').value = pause;
+  $('#d-segments').innerHTML = '';
+  const segments = entrySegments(entry);
+  (segments.length ? segments : [{ start: '', end: '' }]).forEach((seg) => segmentRow(seg));
+  $('#d-pause').value = entryPause(entry) || '';
   $('#d-manual').value = entry.manual_hours ? minutesToTime(entry.manual_hours) : '';
   $('#d-project').value = entry.project || prefs.project || '';
   $('#d-location').value = entry.location || prefs.location || '';
@@ -488,14 +524,23 @@ function readDayForm() {
     if (isNaN(minutes) || minutes === null) return { error: 'Total manuel invalide (ex : 8:30)' };
     return { data: { manual_hours: minutes } };
   }
-  const arrival = $('#d-arrival').value;
-  const departure = $('#d-departure').value;
-  if (!arrival && !departure) return { data: null };
-  if (!arrival) return { error: 'Arrivée manquante' };
+  const segments = [];
+  const rows = [...document.querySelectorAll('#d-segments .seg-row')];
+  for (const [i, row] of rows.entries()) {
+    const start = row.querySelector('.seg-start').value;
+    const end = row.querySelector('.seg-end').value;
+    if (!start && !end) continue;
+    if (!start) return { error: `Plage ${i + 1} : arrivée manquante` };
+    if (!end && i < rows.length - 1) return { error: `Plage ${i + 1} : départ manquant` };
+    if (end && start === end) return { error: `Plage ${i + 1} : arrivée = départ` };
+    segments.push({ start, end });
+  }
+  if (!segments.length) return { data: null };
   const pause = parseInt($('#d-pause').value, 10) || 0;
-  const data = { arrival, departure, break_minutes: pause };
-  if (departure && calculateDayTotal({ date: state.editingDate, ...data }).total <= 0) {
-    return { error: 'La pause est plus longue que la journée' };
+  const data = { segments, pause_minutes: pause };
+  const closed = segments.filter((seg) => seg.end);
+  if (closed.length && calculateDayTotal({ date: state.editingDate, ...data }).total <= 0) {
+    return { error: 'La pause est plus longue que les plages' };
   }
   return { data };
 }
@@ -506,11 +551,11 @@ function updateDayResult() {
   el.classList.toggle('error', Boolean(error));
   if (error) { el.textContent = `⚠️ ${error}`; return; }
   if (!data) { el.textContent = ''; return; }
-  if (data.arrival && !data.departure) { el.textContent = 'Journée en cours (pas de départ)'; return; }
   const calc = calculateDayTotal({ date: state.editingDate, ...data });
+  const open = data.segments && !data.segments[data.segments.length - 1].end;
   el.textContent = `${minutesToTime(calc.total)} travaillées` +
     (calc.overtime ? ` → +${minutesToTime(calc.overtime)} au solde` : '') +
-    (calc.night ? ` (nuit ${minutesToTime(calc.night)})` : '');
+    (calc.night ? ` (nuit ${minutesToTime(calc.night)})` : '') + (open ? ' • plage en cours' : '');
 }
 
 function saveDay(event) {
@@ -527,18 +572,24 @@ function saveDay(event) {
     entry = { date: dateStr, validated: false };
     data.entries.push(entry);
   }
-  ['manual_hours', 'arrival', 'departure', 'break_minutes'].forEach((k) => delete entry[k]);
-  Object.assign(entry, { morning: '', afternoon: '', night: '' }, form, {
+  if (form.manual_hours) {
+    setSegments(entry, [], 0);
+    entry.manual_hours = form.manual_hours;
+  } else {
+    setSegments(entry, form.segments, form.pause_minutes);
+  }
+  Object.assign(entry, {
     project: $('#d-project').value.trim(),
     location: $('#d-location').value.trim(),
     modified_at: localStamp(),
   });
   saveYear(year, data);
 
-  // Une journée corrigée avec un départ clôt la session de badgeage en cours
+  // Une plage laissée ouverte reste « en cours » dans la badgeuse
+  const open = form.segments && !form.segments[form.segments.length - 1].end;
   const session = loadSession();
-  if (session && session.date === dateStr && (entry.departure || entry.manual_hours)) saveSession(null);
-  if (entry.arrival && !entry.departure && dateStr === isoDate(new Date())) saveSession({ date: dateStr });
+  if (open) saveSession({ date: dateStr });
+  else if (session && session.date === dateStr) saveSession(null);
 
   $('#day-dialog').close();
   renderProjects();
@@ -695,7 +746,16 @@ function init() {
   $('#day-form').addEventListener('submit', saveDay);
   $('#d-cancel').addEventListener('click', () => $('#day-dialog').close());
   $('#d-delete').addEventListener('click', deleteDay);
-  ['#d-arrival', '#d-departure', '#d-pause', '#d-manual'].forEach((s) => $(s).addEventListener('input', updateDayResult));
+  ['#d-pause', '#d-manual'].forEach((s) => $(s).addEventListener('input', updateDayResult));
+  $('#d-add-segment').addEventListener('click', () => {
+    const rows = document.querySelectorAll('#d-segments .seg-row');
+    const last = rows[rows.length - 1];
+    if (last && !last.querySelector('.seg-end').value && last.querySelector('.seg-start').value) {
+      toast('Renseigne d\'abord le départ de la plage précédente');
+      return;
+    }
+    segmentRow();
+  });
 
   $('#export-btn').addEventListener('click', exportData);
   $('#import-file').addEventListener('change', importData);
