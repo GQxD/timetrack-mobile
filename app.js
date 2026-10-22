@@ -8,7 +8,7 @@ const NIGHT_COEFFICIENT = 1.5;
 const NIGHT_START_HOUR = 21;
 const NIGHT_END_HOUR = 6;
 const SATURDAY_COEFFICIENT = 1.0;
-const SUNDAY_COEFFICIENT = 2.0;
+const SUNDAY_COEFFICIENT = 1.5;
 // Journée badgée d'une seule traite (sans débadger) : pause déduite automatiquement au départ
 const AUTO_PAUSE_MINUTES = 45;
 const AUTO_PAUSE_MIN_DAY = 6 * 60; // seulement si la plage dépasse 6 h

@@ -1,5 +1,5 @@
 // Cache hors-ligne : réseau d'abord (toujours la dernière version), cache si pas de réseau
-const CACHE = 'timetrack-v5';
+const CACHE = 'timetrack-v6';
 const FILES = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest',
   'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
