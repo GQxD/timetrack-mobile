@@ -136,6 +136,8 @@ function calculateDayTotal(entry) {
   } else {
     overtime = Math.max(0, total - DAILY_TARGET_MINUTES) + night * (NIGHT_COEFFICIENT - 1);
   }
+  // Heures sup réelles (validées) saisies sur le PC : elles remplacent le calcul
+  if (entry.overtime_override !== undefined && entry.overtime_override !== null) overtime = entry.overtime_override;
   return { total, night, overtime: Math.round(overtime) };
 }
 
